@@ -20,7 +20,7 @@ def get_score_info(card_list):
         cards2 = sorted(cards, key=lambda c:c.number_index)
         g = cards[0].number_index
         for i, c in enumerate(cards2[1:]):
-            if (i+g)%len(NUMBERS)!=c.number_index%len(NUMBERS):
+            if i+g != c.number_index:
                 return False
         return True
 
@@ -251,7 +251,7 @@ class PokerGame():
             self.valid_players = []
 
         for p in self.player_list:
-            if get_balance(self.guild_id, p.mention) != 0 and not p in self.valid_players:
+            if get_balance(self.guild_id, p.mention) != 0 and not p in self.valid_players and not self.die_list[p.mention]:
                 self.valid_players.append(p)
 
         # 더 이상 베팅을 할 사람이 없음 (모두 올인 or 다이)
@@ -289,6 +289,9 @@ class PokerGame():
 
         results = [get_score_info(cs + self.field) + (mention,) for mention, cs in self.player_card.items()]
         results.sort(key=functools.cmp_to_key(compare_score), reverse=True )
+
+        # 다이 유저는 제외
+        results = [result for result in results if not self.die_list[result[3]]]
 
         winner_list = [results[0]]
         for result in results:
@@ -354,7 +357,6 @@ async def poker_message(msg, content):
         set_config(guild.id, 'poker_channel', new_channel)
         await channel.send(f'채널이 {new_channel}(으)로 설정되었습니다.')
 
-
     if poker_channel == None:
         return
     
@@ -410,6 +412,9 @@ async def recruit_message(msg, content):
             await thread.send(f'{msg.author.mention}님이 게임에 참여하였습니다.')
         return
     
+    if content == '취소' and game.recruiting:
+        game.recruiting = False
+        
 async def delete_poker_msg(msg, content, prefix):
     if msg.author.bot:
         return
@@ -525,5 +530,5 @@ async def play_message(msg, content):
 
 
     if content == '다이':
-        game.die_list[player] = True
+        game.die_list[player.mention] = True
         await game.next_turn(msg)
