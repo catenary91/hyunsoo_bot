@@ -1,6 +1,6 @@
 import random, itertools, functools
 import discord
-from config_loader import set_config, get_config
+from config_loader import save_config, set_config, get_config
 from card_image_loader import Card, card_list_to_file, make_card
 from bank import get_balance, set_balance
 
@@ -36,7 +36,7 @@ def get_score_info(card_list):
     if flush:
         flush_shape_index = shape_count.index(max(shape_count))
         if all([make_card(flush_shape_index, NUMBERS.index(n)) in cards for n in ['10', 'J', 'Q', 'K', 'A']]):
-            return (10, 0, '로얄 스트레이트 플러쉬')
+            return (10, 0, '로얄 스트레이트 플러쉬', [])
 
     # 2. 스트레이트 플러쉬
     if flush:
@@ -45,27 +45,27 @@ def get_score_info(card_list):
 
         for sub_cards in itertools.combinations(flush_cards, 5):
             if is_straight(sub_cards):
-                return (9, 0, '스트레이트 플러쉬')
+                return (9, 0, '스트레이트 플러쉬', [])
     
     # 3. 포카드
     number_count = [0 for _ in range(len(NUMBERS))]
     for card in cards:
         number_count[card.number_index] += 1
     if max(number_count) == 4:
-        return (8, number_count.index(4), f'포카드')
+        return (8, number_count.index(4), '포카드', [])
     
     # 4. 풀하우스
     if number_count.count(3)>0 and number_count.count(2)>0:
         number_3 = number_count.index(3)
         number_2 = max([i for i, n in enumerate(number_count) if n==2])
-        return (7, number_3 * 100 + number_2, f'풀하우스')
+        return (7, number_3 * 100 + number_2, '풀하우스', [])
 
     # 5. 플러쉬
     if flush:
         flush_shape_index = shape_count.index(max(shape_count))
         flush_cards = [card for card in cards if card.shape_index==flush_shape_index]
         info = [c.number_index for c in sorted(flush_cards, key=lambda c:c.number_index, reverse=True)]
-        return (6, info, f'플러쉬')
+        return (6, info, '플러쉬', [])
     
     # 6. 스트레이트
     max_straight = [0, 0, 0, 0, 0]
@@ -74,26 +74,26 @@ def get_score_info(card_list):
         if is_straight(sorted_sub_cards):
             max_straight = max(max_straight, [c.number_index for c in reversed(sorted_sub_cards)])
     if max_straight != [0, 0, 0, 0, 0]:
-        return (5, max_straight, f'스트레이트')
+        return (5, max_straight, '스트레이트', [])
     
     # 7. 트리플
     if number_count.count(3)>0:
         number_3 = max([i for i, n in enumerate(number_count) if n==3])
-        return (4, number_3, f'트리플')
+        return (4, number_3, '트리플', [])
     
     # 8. 투페어
     if number_count.count(2)>1:
         number_2s = sorted([i for i, n in enumerate(number_count) if n==2], reverse=True)[:2]
-        return (3, number_2s, f'투페어')
+        return (3, number_2s, '투페어', [])
     
     # 9. 원페어
     if number_count.count(2) == 1:
         number_2 = number_count.index(2)
-        return (2, number_2, f'원페어')
+        return (2, number_2, '원페어', [])
     
     # 10. 하이카드
     high_cards = sorted(cards, key=lambda c:c.number_index, reverse=True)[:5]
-    return (1, [c.number_index for c in high_cards], f'하이카드')
+    return (1, [c.number_index for c in high_cards], '하이카드', [])
 
 
 class PokerGame():
@@ -104,10 +104,12 @@ class PokerGame():
         
         self.player_list = []
         self.valid_players = []
-        self.current_player = None
+        self.current_player = 0
         self.betting_list = {}
         self.total_betting = 0
         self.die_list = {}
+
+        self.check_list = []
         
         self.last_raise = None
         
@@ -135,24 +137,23 @@ class PokerGame():
         await self.give_card()
         self.do_default_betting()
 
-        self.current_player = self.player_list[0]
-        self.valid_players = self.player_list[:]
-
         await self.update_embed(False)
         await self.send_next_turn_msg()
 
     def get_balances(self):
-        balance_list = [f'{p.display_name}\t{format(get_balance(self.guild_id, p.mention), ",")}원' for p in self.player_list]
+        balance_list = [f'{p.display_name}  :  {format(get_balance(self.guild_id, p.mention), ",")}원' for p in self.player_list]
         return '\n'.join(balance_list)
     
     def get_bettings(self):
         betting_list = []
-        for p in self.player_list:
+        for i, p in enumerate(self.player_list):
             info = f'{p.display_name}  :  {format(self.betting_list[p.mention], ",")}원'
             if self.die_list[p.mention]:
                 info += ' (다이)'
             elif get_balance(self.guild_id, p.mention) == 0:
                 info += ' (올인)'
+            if i == self.current_player:
+                info += '  <-- 현재 차례'
             betting_list.append(info)
         return '\n'.join(betting_list)
     
@@ -183,7 +184,6 @@ class PokerGame():
         embed = discord.Embed(title='포커 (텍사스 홀덤)')
         embed.add_field(name='잔고', value=self.get_balances(), inline=False)
         embed.add_field(name=f'베팅 금액 (총 {format(self.total_betting, ",")}원)', value=self.get_bettings(), inline=False)
-        embed.add_field(name='베팅 순서', value='\n'.join([p.display_name for p in self.valid_players]), inline=False)
         embed.add_field(name='베팅 종류', value='''
         "!체크" : 베팅을 하지 않고 자신의 턴을 넘깁니다.
         "!레이즈 <금액>" : <금액>만큼 더 베팅합니다.
@@ -203,36 +203,48 @@ class PokerGame():
         self.embed_msg = await self.embed_msg.edit(embed=embed)
 
     async def send_next_turn_msg(self):
-        await self.thread.send(f'{self.current_player.mention}님의 베팅 차례입니다.')
-    
+        await self.thread.send(f'{self.player_list[self.current_player].mention}님의 베팅 차례입니다.')
+
+    def can_do_betting(self, player):
+        return not self.die_list[player.mention] and get_balance(self.guild_id, player.mention)
+
     async def next_turn(self, msg):
-        # 턴 넘기기
-        cur_player_index = self.valid_players.index(self.current_player)
-        max_betting = max(self.betting_list.values())
-        
 
-        if self.current_player != self.valid_players[-1]:
-            self.current_player = self.valid_players[cur_player_index+1]
-            await self.update_embed(False)
-            await self.send_next_turn_msg()
-            return
         
-        new_valid_players = []
-        # 베팅이 끝나지 않음
-        if any([max_betting != self.betting_list[p.mention] for p in self.valid_players]):
-            for p in self.valid_players:
-                if get_balance(self.guild_id, p.mention) != 0 and max_betting != self.betting_list[p.mention]:
-                    new_valid_players.append(p)
-            self.valid_players = new_valid_players
-            self.current_player = self.valid_players[0]
-            await self.update_embed(False)
-            await self.send_next_turn_msg()
+        # 더 베팅할 수 있는 사람
+        valid_players = [p for p in self.player_list if self.can_do_betting(p)]
+        
+        # 더 이상 베팅할 필요가 없음
+        if len(valid_players) <= 1:
+            while len(self.field) != 5:
+                self.field.append(self.deck.pop())
+            await self.view_result()
             return
 
-        # 카드 5장이 모두 오픈되었으면 게임 종료
+        # 베팅이 끝나지 않음 (추가 레이즈 존재) or 현재 플레이어가 체크
+        if any([self.betting_list[p.mention] != self.betting_list[valid_players[0].mention] for p in valid_players]) or self.player_list[self.current_player] in self.check_list:
+            next_player_index = self.current_player
+            while True:
+                next_player_index = (next_player_index + 1) % len(self.player_list)
+                if next_player_index == self.current_player or self.player_list[next_player_index] in self.check_list:
+                    # 더 이상 베팅할 수 있는 사람이 없음
+                    break
+
+                next_player = self.player_list[next_player_index]
+                if self.can_do_betting(next_player):
+                    self.current_player = next_player_index
+                    await self.update_embed(False)
+                    await self.send_next_turn_msg()
+                    return
+        
+        # 한 차례 베팅이 끝남
+        self.check_list = []
+
+        # 필드에 카드가 5장이면 게임종료
         if len(self.field) == 5:
             await self.view_result()
             return
+        
         
         if len(self.field) == 0:
             # 첫 베팅 이후 카드 3장 오픈
@@ -243,36 +255,28 @@ class PokerGame():
             # 카드 1장 오픈
             self.field.append(self.deck.pop())
         
-
-        # 가장 높이 레이즈 한 사람부터 베팅
-        if get_balance(self.guild_id, self.last_raise.mention) != 0:
-            self.valid_players = [self.last_raise]
+        
+        if self.can_do_betting(self.last_raise):
+            self.current_player = [i for i, p in enumerate(self.player_list) if p == self.last_raise][0]
         else:
-            self.valid_players = []
-
-        for p in self.player_list:
-            if get_balance(self.guild_id, p.mention) != 0 and not p in self.valid_players and not self.die_list[p.mention]:
-                self.valid_players.append(p)
-
-        # 더 이상 베팅을 할 사람이 없음 (모두 올인 or 다이)
-        if len(self.valid_players) == 0:
-            while len(self.field != 5):
-                self.field.append(self.deck.pop())
-            await self.update_embed()
-            await self.view_result()
-            return
-
-        self.current_player = self.valid_players[0]
+            next_player_index = self.current_player
+            while True:
+                next_player_index = (next_player_index + 1) % len(self.player_list)
+                next_player = self.player_list[next_player_index]
+                if self.can_do_betting(next_player):
+                    self.current_player = next_player_index
+                    break
 
         await self.update_embed(True)
         await self.send_next_turn_msg()
-
+    
     def do_betting(self, player, money): # do not check validity
         self.total_betting += money
         self.betting_list[player.mention] += money
         set_balance(self.guild_id, player.mention, lambda x:x-money)
 
     async def view_result(self):
+        await self.update_embed(False)
         self.running = False
         def compare_score(s1, s2):
             if s1[0]<s2[0]:
@@ -290,16 +294,15 @@ class PokerGame():
         results = [get_score_info(cs + self.field) + (mention,) for mention, cs in self.player_card.items()]
         results.sort(key=functools.cmp_to_key(compare_score), reverse=True )
 
-        # 다이 유저는 제외
-        results = [result for result in results if not self.die_list[result[3]]]
-
         winner_list = [results[0]]
         for result in results:
             info = result[2]
-            player = self.mention_to_user(result[3])
+            cards = result[3]
+            player = self.mention_to_user(result[4])
             await self.poker_channel.send(f'{player.display_name} : {info}', file=card_list_to_file(self.field + self.player_card[player.mention]))
 
-            if compare_score(result, winner_list[0])==0 and not result in winner_list:
+            # winner_list에 다이 유저는 제외
+            if compare_score(result, winner_list[0])==0 and not result in winner_list and not self.die_list[player]:
                 winner_list.append(result)
 
         winner_list = [self.mention_to_user(winner[3]) for winner in winner_list]
@@ -312,6 +315,8 @@ class PokerGame():
         winner_embed.add_field(name='우승자', value=', '.join([winner.mention for winner in winner_list]), inline=False)
         winner_embed.add_field(name='현재 잔고', value='\n'.join([f'{p.display_name} : {get_balance(self.guild_id, p.mention)}' for p in self.player_list]), inline=False)
         await self.poker_channel.send(embed=winner_embed)
+
+        save_config()
 
     def mention_to_user(self, mention):
         return [p for p in self.player_list if p.mention == mention][0]
@@ -466,7 +471,7 @@ async def play_message(msg, content):
     # 지금부터 베팅 명령어
     
     # 현재 차례가 아니면 무시
-    if msg.author != game.current_player:
+    if msg.author != game.player_list[game.current_player]:
         return
 
     player = msg.author
@@ -480,9 +485,11 @@ async def play_message(msg, content):
 
 
     if content == '체크':
+        # print('check')
         if cur_betting < max_betting:
             await msg.reply(f'{format(max_betting, ",")}원 이상이 되게 반드시 베팅해야 합니다. (콜 또는 레이즈)')
         elif cur_betting == max_betting:
+            game.check_list.append(player)
             await game.next_turn(msg)
 
     if content == '레이즈':
@@ -530,5 +537,6 @@ async def play_message(msg, content):
 
 
     if content == '다이':
+        await channel.send(f'{player.mention}님이 다이를 외쳤습니다.')
         game.die_list[player.mention] = True
         await game.next_turn(msg)
